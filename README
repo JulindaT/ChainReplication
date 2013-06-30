@@ -1,0 +1,119 @@
+Distributed Computing Project
+
+Dominic Canare
+Zhao   Doyle
+Julinda Taylor
+
+Preamble:
+This project is based on research done and documented in the paper "Chain Replication for Supporting High Throughput and Availability" published by the USENIX Association OSDI '04: 6th Symposium on Operating Systems Design and Implementation and written by Renesse, Schneider, FAST Search & Transfer ASA, and Cornell University[1]
+
+Chain Server replication is designed to support large scale storage systems that exhibit high throughput and availability without sacrificing consistency guarantees.  Data integrity is considered to be of critical importance.  Servers in the chain must be able to be removed from the chain by intention or unintentional failure.  Servers must also be allowed to extend chain without loss of data integrity or major disruption of throughput and availability.
+
+In the research many extra steps were taken to ensure data integrity that might not migrate to a live server chain implementation.  Our project is a simplified version of the implementation described in the paper.  We have added constraints to the project in order to simplify the implementation of the project without sacrificing data integrity.  Most of the changes reduce the need to be concerned with high throughput or large data storage or large client demands.   Therefore, our project does not have some of the invariants described in the paper for additional security of data integrity.
+
+				Our Project Details
+
+Installation:
+In order to compile the binaries, a shell script has been provided.
+
+Type ./compile at the prompt.
+
+Running:
+In order to run the program, you must start the servers in consecutive order starting from the head, continuing through the other servers, and then finally adding the tail.  You should see a message that the server has started before starting any subsequent servers
+
+Master: ./run master resources/config.txt
+
+Head: ./run server resources/config.txt
+      ./run server resources/config.txt
+      ./run server resources/config.txt
+      ./run server resources/config.txt
+Tail: ./run server resources/config.txt
+
+The master server must be started first.  After all the servers for your initial chain are running, you can then start the client process by executing the following command on the client machine:
+
+./run client resources/config.txt
+
+Note:  These commands will only work on a file system which supports symbolic links (such as NTFS or FAT32).  Otherwise, the config.txt file will need to be moved into the "bin" folder in order to work correctly.
+
+
+Program Specifications:
+
+This application is designed to run servers in a chain including a head and a tail.  The communication between each server in the chain is TCP and all communication between the servers was considered to be without failures for the first phase.  Subsequent phases include server failures in the chain and addition of new servers to the chain.  There is no limit to the number of servers that can be added to the chain.  The master server and the client are considered to never fail.  There is only one object (an Integer) and it is stored completely on all servers in the chain.  
+
+The head server receives Update requests from the client, calculates the new value of the object by incrementing it by 1, and sends it down the chain.  Each time the server receives an Update, the screen will display the messageID of the Update and the resulting state of the object.  If the status of the object changes, it will send copies of the object down the chain.  Each server between the head and tail will acknowledge receipt of the object as it passes it along by printing a message on the screen.  If a duplicate update is sent, then the object will not be updated so that any idempotent operations will not be repeated.  The update is then sent along the chain with the original value.  The tail server will reply directly to the client.
+
+When the tail receives an Update from the server it will Reply to the client with the Updated version of the object.  It will also resend Replies that the client did not receive.  All communication with the client is through the tail server and uses UDP.
+
+The tail will receive Queries from the client and return the current state of the object as a Reply.  If the Query is resent, then the client will search a cache of Replies and resend the appropriate Reply that matches the messageID.
+
+The client application uses a random number generator to determine whether to send a Query or an Update.  It will send a Query to the tail or an Update to the server, then block that thread until it receives a Reply.  If a Reply is not received within some time, it will resend the Update or Query to either the head or the tail, respectively.  The client uses UDP to communicate with the servers.  
+
+Master Server:
+
+The master server does not participate in object storage.  It monitors each server in the chain to ensure that the servers are operating properly.  Each server in the chain will send a 'heartbeat' message via UDP to the master server.  The master server will maintain the values of the head and the tail.  If no client is connected, it will simply listen for a client to connect.  Once the client connects, it sends the location of the head and the tail of the chain to the client.
+
+We have modified the behavior of the master server so that chain server ip addresses or numbers are not kept in the config.txt file.  Instead they are dynamically added when the master server detects the heartbeat of a new server.  This allows dynamic reconfiguration and extensibility without concern for changing the configuration file.  The master server does need to read it's ip address and port from the config.txt file plus the ip address and port of any clients.
+
+The master server will determine that a server has failed if it has not received a heartbeat message after 5 seconds.  The behavior of the master for the failures is described below.
+
+Server Failure and Extensibility:
+
+We have reconfigured our code to consider the first server that connects as the head and the tail and to extend the chain as each new server comes online by making it the tail.  When a new server comes online, it sends a heartbeat to the master.  The master will add the server to its list of servers.  If that server is the first, and only, server it will assign that server to be both the head and the tail.  The master will notify the client via TCP of the address of the head or tail.   
+
+If the chain already has a head, then the server will be added as the tail.  The master server will notify the old tail that it is no longer the tail and give it the address of the new tail as its successor.  The master will then notify the client via TCP of the new tail address and port.  There will be a log message generated when the master notifies the old tail.  It will then  stop accepting messages from the client.
+
+The master server will detect a server failure if it has not received a heartbeat message from that server within 5 seconds.  If a server in the middle of the chain fails, then the master will notify the predecessor of its new successor.  It will then notify the successor of the new predecessor.  Error messages are generated to the log when communication failures occur.  No communication with the client is necessary.
+
+If the Head server fails, then the master will notify the former Head's successor that its predecessor is NULL and it is the new head server.  The new head will then start receiving and processing update requests from the client.   The master will then notify the client via TCP of the new head's address and port.
+
+If the Tail server fails, the master will notify the old Tail's predecessor that it is the new tail.  The master will then notify the client via TCP of the new tail's address and socket.
+
+These changes provide for both changes and extensibility.  Any new servers added will automatically become the tail.  If any of the servers fail, then the master will detect that using the heartbeat messages set to a 5 second delay and reconfigure the chain to handle the error.
+
+				Test Cases
+
+Test 1:
+
+A random number was added to the client code to ensure that 20% of all packets sent were dropped.  The client was allowed to send 100 reply messages and the results were logged.
+
+From the log files, the following information was available:
+
+Client Queries: 26
+Client resends of Queries: 19
+
+Tail Queries received: 36
+
+Taking the Tail Queries received/(Client Queries + Resend of Queries) = 36/(26+19) = .80
+
+
+
+Test 2:
+
+After 8 updates, the tail server was manually brought down.  Within a few seconds, the master had notified the predecessor of the new tail that it was now the tail and it began receiving and replying to messages from the client.  The client also was notified of the new port and server address of the tail.
+
+Test 3:
+
+After 8 updates, the head server was manually brought down.  The new head server was established a few seconds later and the client was notified by the master.  Then, the third server was manually brought down after it received an update from its predecessor but before the message was sent on.  The master server notified the predecessor and the successor of that server of the new configuration.  Latency in delivery of the messages caused one or two connection errors to display, as was expected, but within a few seconds, the connections were re-established and the data was moving along the chain properly.
+
+Test 4:
+
+After 8 updates, the tail server was manually brought down.  The master server notified the predecessor of the tail server that it was the new tail and it began receiving messages from the client and replying to them.  The master also notified the ciient that of the new address of the new tail.  
+
+After a some time (5-10) seconds the old tail was manually restarted as a new server.  The master server notified the current tail that it was no longer the tail and it stopped replying or listening for messages.  The master also notified the new server that it was now the tail and should listen and reply to messages as soon as it had an updated copy of the data object.  The master server notified the client of the new address and port of the new tail server.
+
+				Possible problems and Future work
+
+The current design will not continue to function if either the client or the master server fails.
+
+The current design does not keep histories of the data object (since it is simple) which would ensure greater data integrity but complicate the implementation.
+
+The current design does not allow for a one server chain that fails.  If only one server is in the chain and it fails, then the chain will stop functioning and the data object will be lost.
+
+The current design supports only one client, though it will support many chain servers.
+
+The current design supports only one data object.  Implementation of other data objects would not be difficult to achieve.
+
+
+References:
+[1]Renesse, R, Schneider, Fred, FAST Search & Transfer ASA, Tromso, Norway, & Cornell University, Ithica, New York (2004). Chain Replication for Supporting High Throughput and Availability. Symposium on Operating Systems Design and Implementation, 6th,
+
